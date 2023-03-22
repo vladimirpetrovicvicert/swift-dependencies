@@ -273,11 +273,13 @@ private final class CachedValues: @unchecked Sendable {
     function: StaticString = #function,
     line: UInt = #line
   ) -> Key.Value where Key.Value: Sendable {
-    self.lock.lock()
-    defer { self.lock.unlock() }
-
     let cacheKey = CacheKey(id: ObjectIdentifier(key), context: context)
-    guard let base = self.cached[cacheKey]?.base, let value = base as? Key.Value
+    let base: Any?
+    self.lock.lock()
+    base = self.cached[cacheKey]?.base
+    self.lock.unlock()
+    
+    guard let value = base as? Key.Value
     else {
       let value: Key.Value?
       switch context {
@@ -341,7 +343,9 @@ private final class CachedValues: @unchecked Sendable {
         return Key.testValue
       }
 
-      self.cached[cacheKey] = AnySendable(value)
+      self.lock.sync {
+        self.cached[cacheKey] = AnySendable(value)
+      }
       return value
     }
 
