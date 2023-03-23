@@ -263,9 +263,52 @@ private final class CachedValues: @unchecked Sendable {
     let context: DependencyContext
   }
 
-  private let lock = NSRecursiveLock()
-  fileprivate var cached = [CacheKey: AnySendable]()
+  fileprivate class CachedObject {
+    var value: AnySendable?
+    private let mutex = NSRecursiveLock()
+    
+    func lock() {
+      mutex.lock()
+    }
 
+    func unlock() {
+      mutex.unlock()
+    }
+  }
+  
+  fileprivate class LockedCacheObject {
+    private let object: CachedObject
+    var value: AnySendable? {
+      get {
+        object.value
+      }
+      set {
+        object.value = newValue
+      }
+    }
+    init(_ object: CachedObject) {
+      object.lock()
+      self.object = object
+    }
+    deinit {
+      object.unlock()
+    }
+  }
+  
+  private let lock = NSRecursiveLock()
+  fileprivate var cached = [CacheKey: CachedObject]()
+
+  private subscript(cached key: CacheKey) -> LockedCacheObject {
+    return lock.sync {
+      guard let cachedObject = cached[key] else {
+        let cachedObject = CachedObject()
+        cached[key] = cachedObject
+        return LockedCacheObject(cachedObject)
+      }
+      return LockedCacheObject(cachedObject)
+    }
+  }
+  
   func value<Key: TestDependencyKey>(
     for key: Key.Type,
     context: DependencyContext,
@@ -274,12 +317,10 @@ private final class CachedValues: @unchecked Sendable {
     line: UInt = #line
   ) -> Key.Value where Key.Value: Sendable {
     let cacheKey = CacheKey(id: ObjectIdentifier(key), context: context)
-    let base: Any?
-    self.lock.lock()
-    base = self.cached[cacheKey]?.base
-    self.lock.unlock()
     
-    guard let value = base as? Key.Value
+    let lockedObject = self[cached: cacheKey]
+
+    guard let value = lockedObject.value?.base as? Key.Value
     else {
       let value: Key.Value?
       switch context {
@@ -343,9 +384,7 @@ private final class CachedValues: @unchecked Sendable {
         return Key.testValue
       }
 
-      self.lock.sync {
-        self.cached[cacheKey] = AnySendable(value)
-      }
+      lockedObject.value = AnySendable(value)
       return value
     }
 
